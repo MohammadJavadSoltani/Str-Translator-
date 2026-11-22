@@ -16,10 +16,20 @@ import {
   validateSourceText,
 } from './utils/translationUtils';
 import {
+  buildTranslatedFileName,
+  chunkCuesForTranslation,
+  isSupportedUploadFile,
+  MAX_UPLOAD_BYTES,
+  parseUploadedFile,
+  serializeSubtitleFile,
+  type ParsedUploadedFile,
+} from './utils/subtitleUtils';
+import {
   fetchBatchComparison,
   fetchSpeechAudio,
   fetchTranslationAnalysis,
   streamTranslation,
+  translateSubtitleCues,
   type BatchCompareResult,
 } from './services/translationApi';
 import { Header, type ActiveTab } from './components/Header';
@@ -66,10 +76,20 @@ export default function App() {
   const [liveMode, setLiveMode] = useState<boolean>(true);
   const [showTransliteration, setShowTransliteration] = useState<boolean>(true);
 
+  // Uploaded .str / .srt / .vtt / .txt file state
+  const [uploadedFile, setUploadedFile] = useState<ParsedUploadedFile | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isTranslatingFile, setIsTranslatingFile] = useState<boolean>(false);
+  const [fileProgress, setFileProgress] = useState<{ completed: number; total: number } | null>(
+    null
+  );
+  const [bilingualExport, setBilingualExport] = useState<boolean>(false);
+
   // Request & streaming states
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<TranslationAnalysis | null>(null);
 
   // Audio playback state
@@ -93,10 +113,11 @@ export default function App() {
   const [isComparing, setIsComparing] = useState<boolean>(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
-  // Abort refs for race-free real-time streaming
+  // Abort refs for race-free real-time streaming & file batching
   const streamAbortRef = useRef<AbortController | null>(null);
   const analysisAbortRef = useRef<AbortController | null>(null);
   const compareAbortRef = useRef<AbortController | null>(null);
+  const fileAbortRef = useRef<AbortController | null>(null);
   const debounceTimerRef = useRef<number | null>(null);
   const skipNextLiveEffectRef = useRef<boolean>(false);
 
@@ -139,6 +160,7 @@ export default function App() {
       streamAbortRef.current?.abort();
       analysisAbortRef.current?.abort();
       compareAbortRef.current?.abort();
+      fileAbortRef.current?.abort();
       if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
     };
   }, [stopAudio]);
@@ -171,6 +193,7 @@ export default function App() {
       streamAbortRef.current = streamController;
 
       setError(null);
+      setAnalysisError(null);
       setIsStreaming(true);
       setIsAnalyzing(false);
       setAnalysis(null);
@@ -207,48 +230,6 @@ export default function App() {
             tone: params.toneId,
           })
         );
-
-        // Fetch linguistic analysis & transliteration in parallel behind the completed stream
-        const analysisController = new AbortController();
-        analysisAbortRef.current = analysisController;
-        setIsAnalyzing(true);
-
-        try {
-          const details = await fetchTranslationAnalysis(
-            {
-              sourceText: validation.trimmed,
-              translatedText: finalText,
-              languageId: params.langId,
-              dialectId: params.dialId,
-              tone: params.toneId,
-            },
-            analysisController.signal
-          );
-          if (!analysisController.signal.aborted) {
-            setAnalysis(details);
-            if (details.transliteration) {
-              setHistory((prev) =>
-                upsertHistoryEntry(prev, {
-                  sourceText: validation.trimmed,
-                  translatedText: finalText,
-                  transliteration: details.transliteration,
-                  languageId: params.langId,
-                  dialectId: params.dialId,
-                  tone: params.toneId,
-                })
-              );
-            }
-          }
-        } catch (analysisErr) {
-          if (!analysisController.signal.aborted) {
-            // Non-blocking: main translation remains intact even if secondary analysis fails
-            console.warn('Linguistic analysis unavailable:', analysisErr);
-          }
-        } finally {
-          if (!analysisController.signal.aborted) {
-            setIsAnalyzing(false);
-          }
-        }
       } catch (err) {
         if (streamController.signal.aborted) return;
         setIsStreaming(false);
@@ -256,6 +237,131 @@ export default function App() {
       }
     },
     [stopAudio]
+  );
+
+  // On-demand linguistic breakdown (phonetics, dialect notes, alternatives, key phrases)
+  // Triggered explicitly by user action to keep real-time typing within a single API call per translation.
+  const handleAnalyzeCurrent = useCallback(async () => {
+    const trimmedSource = sourceText.trim();
+    const trimmedTarget = translatedText.trim();
+    if (!trimmedSource || !trimmedTarget || isAnalyzing) return;
+
+    analysisAbortRef.current?.abort();
+    const analysisController = new AbortController();
+    analysisAbortRef.current = analysisController;
+
+    setAnalysisError(null);
+    setIsAnalyzing(true);
+
+    try {
+      const details = await fetchTranslationAnalysis(
+        {
+          sourceText: trimmedSource,
+          translatedText: trimmedTarget,
+          languageId,
+          dialectId,
+          tone,
+        },
+        analysisController.signal
+      );
+      if (!analysisController.signal.aborted) {
+        setAnalysis(details);
+        if (details.transliteration) {
+          setHistory((prev) =>
+            upsertHistoryEntry(prev, {
+              sourceText: trimmedSource,
+              translatedText: trimmedTarget,
+              transliteration: details.transliteration,
+              languageId,
+              dialectId,
+              tone,
+            })
+          );
+        }
+      }
+    } catch (err) {
+      if (!analysisController.signal.aborted) {
+        setAnalysisError(
+          err instanceof Error ? err.message : 'Could not load linguistic notes.'
+        );
+      }
+    } finally {
+      if (!analysisController.signal.aborted) {
+        setIsAnalyzing(false);
+      }
+    }
+  }, [sourceText, translatedText, languageId, dialectId, tone, isAnalyzing]);
+
+  // Subtitle file batch translation handler
+  const runSubtitleFileTranslation = useCallback(
+    async (
+      targetFile: ParsedUploadedFile,
+      params: { langId: string; dialId: string; toneId: ToneId }
+    ) => {
+      if (targetFile.kind === 'plain' || targetFile.cues.length === 0) return;
+
+      fileAbortRef.current?.abort();
+      const controller = new AbortController();
+      fileAbortRef.current = controller;
+
+      setError(null);
+      setIsTranslatingFile(true);
+      setFileProgress({ completed: 0, total: targetFile.cues.length });
+
+      const batches = chunkCuesForTranslation(targetFile.cues, 40, 4500);
+      const translatedMap = new Map<number, string>();
+      let completedCount = 0;
+
+      try {
+        for (let batchIdx = 0; batchIdx < batches.length; batchIdx += 1) {
+          const batch = batches[batchIdx];
+          if (controller.signal.aborted) return;
+          if (batchIdx > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 350));
+            if (controller.signal.aborted) return;
+          }
+          const results = await translateSubtitleCues(
+            {
+              cues: batch.map((c) => ({ id: c.id, text: c.text })),
+              languageId: params.langId,
+              dialectId: params.dialId,
+              tone: params.toneId,
+            },
+            controller.signal
+          );
+
+          if (controller.signal.aborted) return;
+
+          for (const row of results) {
+            translatedMap.set(row.id, row.translation);
+          }
+          completedCount += batch.length;
+          setFileProgress({ completed: completedCount, total: targetFile.cues.length });
+
+          setUploadedFile((prev) => {
+            if (!prev || prev.fileName !== targetFile.fileName) return prev;
+            return {
+              ...prev,
+              cues: prev.cues.map((cue) =>
+                translatedMap.has(cue.id)
+                  ? { ...cue, translatedText: translatedMap.get(cue.id) ?? cue.translatedText }
+                  : cue
+              ),
+            };
+          });
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : 'File translation failed.');
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsTranslatingFile(false);
+          setFileProgress(null);
+        }
+      }
+    },
+    []
   );
 
   // Real-time debounced auto-translation when typing or switching settings in Live mode
@@ -267,6 +373,10 @@ export default function App() {
 
     if (debounceTimerRef.current) {
       window.clearTimeout(debounceTimerRef.current);
+    }
+
+    if (uploadedFile && uploadedFile.kind !== 'plain') {
+      return;
     }
 
     if (!sourceText.trim()) {
@@ -289,12 +399,12 @@ export default function App() {
         dialId: dialectId,
         toneId: tone,
       });
-    }, 450);
+    }, 850);
 
     return () => {
       if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
     };
-  }, [sourceText, languageId, dialectId, tone, liveMode, activeTab, runTranslation]);
+  }, [sourceText, languageId, dialectId, tone, liveMode, activeTab, uploadedFile, runTranslation]);
 
   function handleLanguageChange(nextLangId: string) {
     const nextLang = getLanguageById(nextLangId);
@@ -302,7 +412,108 @@ export default function App() {
     setDialectId(nextLang.defaultDialectId);
   }
 
+  function handleUploadFile(file: File) {
+    setUploadError(null);
+    setError(null);
+
+    if (!isSupportedUploadFile(file.name)) {
+      setUploadError(
+        `Unsupported file "${file.name}". Please upload a .str, .srt, .vtt, or .txt file.`
+      );
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError('File exceeds the 2 MB limit. Please upload a smaller .str or .srt file.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = typeof reader.result === 'string' ? reader.result : '';
+      if (!content.trim()) {
+        setUploadError(`The file "${file.name}" is empty.`);
+        return;
+      }
+
+      const parsed = parseUploadedFile(file.name, content);
+      setUploadedFile(parsed);
+      setActiveTab('studio');
+
+      if (parsed.kind === 'plain') {
+        skipNextLiveEffectRef.current = true;
+        setSourceText(parsed.rawText);
+        void runTranslation({
+          text: parsed.rawText,
+          langId: languageId,
+          dialId: dialectId,
+          toneId: tone,
+        });
+      } else {
+        void runSubtitleFileTranslation(parsed, {
+          langId: languageId,
+          dialId: dialectId,
+          toneId: tone,
+        });
+      }
+    };
+    reader.onerror = () => {
+      setUploadError(`Could not read "${file.name}". Please try again.`);
+    };
+    reader.readAsText(file, 'utf-8');
+  }
+
+  function handleClearUploadedFile() {
+    fileAbortRef.current?.abort();
+    setUploadedFile(null);
+    setUploadError(null);
+    setIsTranslatingFile(false);
+    setFileProgress(null);
+  }
+
+  function handleEditSubtitleCue(cueId: number, nextTranslated: string) {
+    setUploadedFile((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        cues: prev.cues.map((cue) =>
+          cue.id === cueId ? { ...cue, translatedText: nextTranslated } : cue
+        ),
+      };
+    });
+  }
+
+  function handleDownloadTranslatedFile() {
+    let content = '';
+    let fileName = '';
+
+    if (uploadedFile && uploadedFile.kind !== 'plain') {
+      content = serializeSubtitleFile(uploadedFile, { bilingual: bilingualExport });
+      fileName = buildTranslatedFileName(uploadedFile.fileName, languageId, dialectId);
+    } else if (translatedText.trim()) {
+      content = translatedText;
+      fileName = buildTranslatedFileName(
+        uploadedFile?.fileName || 'translation.str',
+        languageId,
+        dialectId
+      );
+    } else {
+      return;
+    }
+
+    const blob = new Blob([`\uFEFF${content}`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   function handleLoadSample(sample: SamplePhrase) {
+    handleClearUploadedFile();
     skipNextLiveEffectRef.current = true;
     setSourceText(sample.text);
     setLanguageId(sample.recommendedLangId);
@@ -442,6 +653,7 @@ export default function App() {
     targetDialectId: string,
     existingTranslation?: string
   ) {
+    handleClearUploadedFile();
     skipNextLiveEffectRef.current = Boolean(existingTranslation);
     setLanguageId(targetLangId);
     setDialectId(targetDialectId);
@@ -462,6 +674,7 @@ export default function App() {
   }
 
   function handleRestoreHistory(entry: HistoryEntry) {
+    handleClearUploadedFile();
     skipNextLiveEffectRef.current = true;
     setSourceText(entry.sourceText);
     setTranslatedText(entry.translatedText);
@@ -488,6 +701,7 @@ export default function App() {
     targetDialectId: string,
     sampleText: string
   ) {
+    handleClearUploadedFile();
     skipNextLiveEffectRef.current = true;
     setLanguageId(targetLangId);
     setDialectId(targetDialectId);
@@ -514,6 +728,15 @@ export default function App() {
 
     if (activeTab !== 'studio') {
       setActiveTab('studio');
+      return;
+    }
+
+    if (uploadedFile && uploadedFile.kind !== 'plain') {
+      void runSubtitleFileTranslation(uploadedFile, {
+        langId: languageId,
+        dialId: dialectId,
+        toneId: tone,
+      });
       return;
     }
 
@@ -562,8 +785,10 @@ export default function App() {
         ? 'Comparing…'
         : 'Compare'
       : activeTab === 'studio'
-      ? isStreaming
+      ? isStreaming || isTranslatingFile
         ? 'Translating…'
+        : uploadedFile && uploadedFile.kind !== 'plain'
+        ? 'Translate File'
         : sourceText.trim()
         ? 'Translate'
         : 'Try Sample'
@@ -576,7 +801,7 @@ export default function App() {
         onSelectTab={setActiveTab}
         onPrimaryAction={handlePrimaryHeaderAction}
         primaryActionLabel={primaryActionLabel}
-        isBusy={isStreaming || isComparing}
+        isBusy={isStreaming || isComparing || isTranslatingFile}
       />
 
       <main className="flex-1">
@@ -595,12 +820,21 @@ export default function App() {
             liveMode={liveMode}
             onToggleLiveMode={() => setLiveMode((v) => !v)}
             showTransliteration={showTransliteration}
-            onToggleTransliteration={() => setShowTransliteration((v) => !v)}
+            onToggleTransliteration={() => {
+              setShowTransliteration((prev) => {
+                const next = !prev;
+                if (next && translatedText.trim() && !analysis && !isAnalyzing && !isStreaming) {
+                  void handleAnalyzeCurrent();
+                }
+                return next;
+              });
+            }}
             isDark={isDark}
             onToggleTheme={() => setIsDark((v) => !v)}
             isStreaming={isStreaming}
             isAnalyzing={isAnalyzing}
             error={error}
+            analysisError={analysisError}
             onRetry={() =>
               void runTranslation({
                 text: sourceText,
@@ -610,6 +844,7 @@ export default function App() {
               })
             }
             analysis={analysis}
+            onAnalyze={() => void handleAnalyzeCurrent()}
             onLoadSample={handleLoadSample}
             isStarred={Boolean(currentHistoryMatch?.starred)}
             onToggleStarCurrent={handleToggleStarCurrent}
@@ -617,6 +852,25 @@ export default function App() {
             isLoadingAudio={isLoadingAudio}
             audioError={audioError}
             onSpeak={() => void handleSpeak()}
+            uploadedFile={uploadedFile}
+            uploadError={uploadError}
+            isTranslatingFile={isTranslatingFile}
+            fileProgress={fileProgress}
+            bilingualExport={bilingualExport}
+            onToggleBilingualExport={() => setBilingualExport((v) => !v)}
+            onUploadFile={handleUploadFile}
+            onClearUploadedFile={handleClearUploadedFile}
+            onTranslateUploadedFile={() => {
+              if (uploadedFile) {
+                void runSubtitleFileTranslation(uploadedFile, {
+                  langId: languageId,
+                  dialId: dialectId,
+                  toneId: tone,
+                });
+              }
+            }}
+            onEditSubtitleCue={handleEditSubtitleCue}
+            onDownloadTranslatedFile={handleDownloadTranslatedFile}
           />
         )}
 
@@ -656,7 +910,7 @@ export default function App() {
       <footer className="border-t border-stone-200 dark:border-zinc-800/80 py-5 mt-10">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
           <span>Zaban · Editorial Translation Studio</span>
-          <span>12 languages · 35 regional dialects &amp; Persian registers</span>
+          <span>12 languages · 35 dialects · .str &amp; .srt support</span>
         </div>
       </footer>
     </div>

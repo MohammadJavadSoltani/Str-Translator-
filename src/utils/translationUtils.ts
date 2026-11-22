@@ -5,7 +5,7 @@ import {
   type HistoryEntry,
   type LanguageOption,
   type ToneId,
-} from '../data/languages';
+} from '../data/languages.ts';
 
 export const MAX_SOURCE_CHARS = 4000;
 

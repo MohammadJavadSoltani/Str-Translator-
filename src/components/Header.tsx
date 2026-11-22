@@ -24,12 +24,12 @@ export function Header({
 }: HeaderProps) {
   return (
     <header className="sticky top-0 z-30 border-b border-stone-200 dark:border-zinc-800 bg-stone-50/95 dark:bg-zinc-950/95 backdrop-blur-sm">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-4 sm:gap-8">
+      <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-8">
         {/* Zone 1: Single-element editorial wordmark */}
         <button
           type="button"
           onClick={() => onSelectTab('studio')}
-          className="font-serif text-xl sm:text-2xl font-medium tracking-tight text-zinc-900 dark:text-zinc-50 hover:text-blue-700 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded-sm"
+          className="font-serif text-lg sm:text-2xl font-medium tracking-tight text-zinc-900 dark:text-zinc-50 hover:text-blue-700 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded-sm"
         >
           Zaban
         </button>
@@ -37,7 +37,7 @@ export function Header({
         {/* Zone 2: Clean single-line text navigation links */}
         <nav
           aria-label="Primary navigation"
-          className="flex items-center gap-4 sm:gap-7 overflow-x-auto"
+          className="flex items-stretch h-full gap-2.5 sm:gap-7"
         >
           {NAV_ITEMS.map((item) => {
             const isActive = activeTab === item.id;
@@ -47,7 +47,7 @@ export function Header({
                 type="button"
                 onClick={() => onSelectTab(item.id)}
                 aria-current={isActive ? 'page' : undefined}
-                className={`relative py-1 text-sm font-medium transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded-sm ${
+                className={`relative inline-flex items-center text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded-sm ${
                   isActive
                     ? 'text-zinc-950 dark:text-zinc-50'
                     : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
@@ -57,7 +57,7 @@ export function Header({
                 {isActive && (
                   <span
                     aria-hidden="true"
-                    className="absolute inset-x-0 -bottom-[17px] sm:-bottom-[21px] h-[2px] bg-blue-700 dark:bg-blue-400"
+                    className="absolute inset-x-0 bottom-0 h-[2px] bg-blue-700 dark:bg-blue-400"
                   />
                 )}
               </button>
@@ -71,7 +71,7 @@ export function Header({
             type="button"
             onClick={onPrimaryAction}
             disabled={isBusy}
-            className="px-4 py-2 text-xs sm:text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-700 dark:focus-visible:ring-offset-zinc-950"
+            className="px-2.5 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-700 dark:focus-visible:ring-offset-zinc-950"
           >
             {primaryActionLabel}
           </button>
