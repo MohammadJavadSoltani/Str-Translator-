@@ -1,0 +1,6 @@
+{
+  "name": "Zaban — Fluent Multilingual & Persian Translator",
+  "description": "A minimalist real-time English translation studio with fluent Persian dialects, linguistic nuance notes, and multi-language comparison.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

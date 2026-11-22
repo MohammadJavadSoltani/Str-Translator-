@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-persian: "Vazirmatn", "Plus Jakarta Sans", Tahoma, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-stone-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 transition-colors duration-200;
+  }
+
+  /* Optical legibility for Persian and Arabic scripts */
+  [lang="fa"],
+  [lang="ar"],
+  .font-persian {
+    font-family: var(--font-persian);
+    font-feature-settings: "ss01" on, "kern" on;
+  }
+}
+
+/* Custom subtle scrollbars */
+textarea::-webkit-scrollbar,
+.subtle-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+textarea::-webkit-scrollbar-track,
+.subtle-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+textarea::-webkit-scrollbar-thumb,
+.subtle-scroll::-webkit-scrollbar-thumb {
+  @apply bg-stone-300 dark:bg-zinc-700 rounded-full;
+}
+
+textarea::-webkit-scrollbar-thumb:hover,
+.subtle-scroll::-webkit-scrollbar-thumb:hover {
+  @apply bg-stone-400 dark:bg-zinc-600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
